@@ -1,3 +1,17 @@
+"""
+Train a CPWA (Compressed-Prefix Sliding Window Attention) language model on FineWeb-Edu.
+
+CPWA combines gated pooling for block compression with sliding-window attention,
+giving O(T·B) complexity while retaining full access to the entire history.
+
+Same features as original:
+- checkpoint saving/resuming
+- live loss printing
+- gradient accumulation
+- fp16 mixed precision
+- rolling tokens/sec logging
+"""
+
 import math
 import time
 from collections import deque
@@ -16,8 +30,8 @@ CONFIG = {
     # --- data ---
     "dataset_name": "HuggingFaceFW/fineweb-edu",
     "dataset_subset": "sample-10BT",
-    "seq_len": 512,                # must be divisible by window_size
-    "batch_size": 16,
+    "seq_len": 1024,                # must be divisible by window_size
+    "batch_size": 10,
 
     # --- model (CPWA) ---
     "n_layer": 6,
@@ -473,7 +487,7 @@ def save_checkpoint(step, train_steps, train_losses, val_steps, val_losses):
 def load_checkpoint(path):
     ckpt = torch.load(path, map_location=CONFIG["device"])
     model.load_state_dict(ckpt["model_state_dict"])
-    # optimizer.load_state_dict(ckpt["optimizer_state_dict"])  # uncomment if needed
+    optimizer.load_state_dict(ckpt["optimizer_state_dict"])
     if USE_AMP and "scaler_state_dict" in ckpt:
         scaler.load_state_dict(ckpt["scaler_state_dict"])
     start_step = ckpt["step"]
