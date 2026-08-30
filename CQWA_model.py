@@ -28,7 +28,7 @@ from tqdm.auto import tqdm
 # ========== CONFIG ==========
 CONFIG = {
     # --- data ---
-    "dataset_name": "HuggingFaceFW/fineweb-edu",
+    "dataset_name": "HuggingFaceFW/fineweb",
     "dataset_subset": "sample-10BT",
     "seq_len": 1024,                # must be divisible by window_size
     "batch_size": 10,
@@ -43,10 +43,10 @@ CONFIG = {
     "rope_base": 10000.0,
 
     # --- training ---
-    "max_steps": 20000,
+    "max_steps": 80000,
     "lr": 3e-4,
     "min_lr_ratio": 0.1,
-    "lr_decay_steps": 20000,
+    "lr_decay_steps": 80000,
     "weight_decay": 0.1,
     "warmup_steps": 0,
     "grad_clip": 1.0,
@@ -122,7 +122,12 @@ def make_loader(split, subset):
 train_loader = make_loader("train", CONFIG["dataset_subset"])
 val_loader = make_loader("train", CONFIG["dataset_subset"])
 
-# ========== CPWA MODEL COMPONENTS ==========
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from dataclasses import dataclass
+
+# ========== CPWA MODEL COMPONENTS (cleaned) ==========
 
 # ------------------------ rope.py ------------------------
 def build_rope_cache(max_pos: int, head_dim: int, base: float = 10000.0, device=None):
@@ -146,7 +151,7 @@ def apply_rope(x: torch.Tensor, positions: torch.Tensor, cos_cache: torch.Tensor
     rot_x2 = x1 * sin + x2 * cos
     return torch.stack([rot_x1, rot_x2], dim=-1).flatten(-2)
 
-# ------------------------ CPWA Attention ------------------------
+
 def build_block_causal_mask(n_compressed: int, n_raw: int, device=None) -> torch.Tensor:
     total = n_compressed + n_raw
     mask = torch.zeros(total, total, dtype=torch.bool, device=device)
@@ -160,84 +165,11 @@ def build_block_causal_mask(n_compressed: int, n_raw: int, device=None) -> torch
         mask[n_compressed:, n_compressed:] = raw_causal
     return mask
 
-class CPWAAttention(nn.Module):
-    """
-    Compressed-Prefix Sliding Window Attention.
-    Raw tokens attend to all compressed prefix tokens and causally to each other.
-    Compressed tokens attend causally among themselves only.
-    """
-    def __init__(self, d_model: int, n_heads: int, dropout: float = 0.0):
-        super().__init__()
-        assert d_model % n_heads == 0
-        self.d_model = d_model
-        self.n_heads = n_heads
-        self.head_dim = d_model // n_heads
-        self.q_proj = nn.Linear(d_model, d_model, bias=False)
-        self.k_proj = nn.Linear(d_model, d_model, bias=False)
-        self.v_proj = nn.Linear(d_model, d_model, bias=False)
-        self.out_proj = nn.Linear(d_model, d_model, bias=False)
-        self.dropout = dropout
-
-    def _split_heads(self, x: torch.Tensor) -> torch.Tensor:
-        B, T, D = x.shape
-        return x.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
-
-    def _merge_heads(self, x: torch.Tensor) -> torch.Tensor:
-        B, H, T, hd = x.shape
-        return x.transpose(1, 2).contiguous().view(B, T, H * hd)
-
-    def forward(self, raw, compressed, raw_positions, compressed_positions,
-                cos_cache, sin_cache):
-        B, n_raw, D = raw.shape
-        n_comp = compressed.shape[1]
-        device = raw.device
-
-        if n_comp > 0:
-            kv_src = torch.cat([compressed, raw], dim=1)
-            kv_positions = torch.cat([compressed_positions, raw_positions], dim=1)
-        else:
-            kv_src = raw
-            kv_positions = raw_positions
-
-        k = self._split_heads(self.k_proj(kv_src))
-        v = self._split_heads(self.v_proj(kv_src))
-        k = apply_rope(k, kv_positions, cos_cache, sin_cache)
-
-        # Compressed query group (causal among compressed)
-        new_compressed_out = None
-        if n_comp > 0:
-            q_comp = self._split_heads(self.q_proj(compressed))
-            q_comp = apply_rope(q_comp, compressed_positions, cos_cache, sin_cache)
-            k_comp = k[:, :, :n_comp, :]
-            v_comp = v[:, :, :n_comp, :]
-            comp_mask = build_block_causal_mask(n_comp, 0, device=device)[:n_comp, :n_comp]
-            attn_mask = comp_mask.unsqueeze(0).unsqueeze(0)
-            out_comp = F.scaled_dot_product_attention(
-                q_comp, k_comp, v_comp, attn_mask=attn_mask,
-                dropout_p=self.dropout if self.training else 0.0,
-            )
-            new_compressed_out = self.out_proj(self._merge_heads(out_comp))
-
-        # Raw query group: attend to all compressed + causal raw
-        q_raw = self._split_heads(self.q_proj(raw))
-        q_raw = apply_rope(q_raw, raw_positions, cos_cache, sin_cache)
-
-        full_mask = build_block_causal_mask(n_comp, n_raw, device=device)
-        raw_rows_mask = full_mask[n_comp:, :]
-        attn_mask = raw_rows_mask.unsqueeze(0).unsqueeze(0)
-
-        out_raw = F.scaled_dot_product_attention(
-            q_raw, k, v, attn_mask=attn_mask,
-            dropout_p=self.dropout if self.training else 0.0,
-        )
-        new_raw_out = self.out_proj(self._merge_heads(out_raw))
-
-        return new_raw_out, new_compressed_out
 
 # ------------------------ Gated Pooler (compressor) ------------------------
 class GatedPooler(nn.Module):
     """
-    Compresses a block of tokens into a single vector using per‑channel gated pooling.
+    Compresses a block of tokens into a single vector using per-channel gated pooling.
     """
     def __init__(self, d_model: int, block_size: int, gate_hidden_mult: int = 1, dropout: float = 0.0):
         super().__init__()
@@ -270,7 +202,220 @@ class GatedPooler(nn.Module):
         compressed = (weights * values).sum(dim=-2)
         return self.out_norm(compressed)
 
-# ------------------------ CPWA Layer (core) ------------------------
+
+# ------------------------ CPWA Attention (now owns ALL block/window orchestration) ------------------------
+class CPWAAttention(nn.Module):
+    """
+    Compressed-Prefix Sliding Window Attention.
+
+    Owns everything specific to the CPWA mechanism: the gated pooler that
+    compresses completed blocks, the RoPE cache, the chunked loop over
+    windows, and the raw <-> compressed attention pattern itself (raw tokens
+    attend to all compressed prefix tokens and causally to each other;
+    compressed tokens attend causally among themselves only).
+
+    Given pre-normed hidden states for a full sequence, returns the
+    attention-output residual stream to add back — i.e. this module is a
+    drop-in replacement for "self.attn(self.ln1(x))" in a normal transformer
+    block. CPWA (the outer block) no longer needs to know that CPWA works in
+    windows/blocks at all.
+    """
+    def __init__(self, d_model: int, n_heads: int, window_size: int,
+                 rope_base: float = 10000.0, dropout: float = 0.0):
+        super().__init__()
+        assert d_model % n_heads == 0
+        self.d_model = d_model
+        self.n_heads = n_heads
+        self.head_dim = d_model // n_heads
+        self.window_size = window_size
+        self.rope_base = rope_base
+        self.dropout = dropout
+
+        self.q_proj = nn.Linear(d_model, d_model, bias=False)
+        self.k_proj = nn.Linear(d_model, d_model, bias=False)
+        self.v_proj = nn.Linear(d_model, d_model, bias=False)
+        self.out_proj = nn.Linear(d_model, d_model, bias=False)
+
+        self.ln_pool = nn.LayerNorm(d_model)
+        self.pooler = GatedPooler(d_model, window_size)
+
+    def _split_heads(self, x: torch.Tensor) -> torch.Tensor:
+        B, T, D = x.shape
+        return x.view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
+
+    def _merge_heads(self, x: torch.Tensor) -> torch.Tensor:
+        B, H, T, hd = x.shape
+        return x.transpose(1, 2).contiguous().view(B, T, H * hd)
+
+    def _rope_cache(self, T, device):
+        max_pos = max(T, self.window_size) + 8
+        return build_rope_cache(max_pos, self.head_dim, base=self.rope_base, device=device)
+
+    def _attend(self, raw, compressed, raw_positions, compressed_positions, cos_cache, sin_cache):
+        """
+        One raw-query-group attention call: raw tokens attend to the given
+        compressed prefix (all of it, causally-safe by construction) plus
+        causally among themselves. Returns updated raw representations only
+        (compressed tokens are produced solely by the pooler and are never
+        rewritten by attention here).
+        """
+        B, n_raw, D = raw.shape
+        n_comp = compressed.shape[1]
+        device = raw.device
+
+        if n_comp > 0:
+            kv_src = torch.cat([compressed, raw], dim=1)
+            kv_positions = torch.cat([compressed_positions, raw_positions], dim=1)
+        else:
+            kv_src = raw
+            kv_positions = raw_positions
+
+        k = self._split_heads(self.k_proj(kv_src))
+        v = self._split_heads(self.v_proj(kv_src))
+        k = apply_rope(k, kv_positions, cos_cache, sin_cache)
+
+        q_raw = self._split_heads(self.q_proj(raw))
+        q_raw = apply_rope(q_raw, raw_positions, cos_cache, sin_cache)
+
+        full_mask = build_block_causal_mask(n_comp, n_raw, device=device)
+        raw_rows_mask = full_mask[n_comp:, :]
+        attn_mask = raw_rows_mask.unsqueeze(0).unsqueeze(0)
+
+        out_raw = F.scaled_dot_product_attention(
+            q_raw, k, v, attn_mask=attn_mask,
+            dropout_p=self.dropout if self.training else 0.0,
+        )
+        return self.out_proj(self._merge_heads(out_raw))
+
+    def forward(self, h_norm: torch.Tensor) -> torch.Tensor:
+        """
+        h_norm: (B, T, D) already-normalized hidden states for the full
+        training sequence.
+        Returns: (B, T, D) attention output (to be added as a residual by
+        the caller) — same contract as a plain self-attention module.
+        """
+        B, T, D = h_norm.shape
+        bs = self.window_size
+        device = h_norm.device
+
+        n_blocks = T // bs
+        tail_len = T % bs
+
+        cos_cache, sin_cache = self._rope_cache(T, device)
+
+        # Pre-compute all compressed tokens (one vectorized call over every
+        # completed block) — see GatedPooler; block boundaries are fixed by
+        # position, not data, so this exactly matches incremental generation.
+        if n_blocks > 0:
+            h_blocks = h_norm[:, : n_blocks * bs, :].view(B, n_blocks, bs, D)
+            compressed_all = self.ln_pool(self.pooler(h_blocks))
+            comp_positions_all = (torch.arange(n_blocks, device=device) + 1) * bs - 1
+            comp_positions_all = comp_positions_all.unsqueeze(0).expand(B, -1)
+        else:
+            compressed_all = h_norm.new_zeros(B, 0, D)
+            comp_positions_all = torch.zeros(B, 0, dtype=torch.long, device=device)
+
+        attn_out_chunks = []
+
+        # Each completed block's raw tokens see only compressed[0:i] (blocks
+        # strictly before it) — block i itself isn't "complete" for
+        # compression purposes until its own last token has been processed.
+        for i in range(n_blocks):
+            raw_chunk = h_norm[:, i * bs:(i + 1) * bs, :]
+            raw_pos = torch.arange(i * bs, (i + 1) * bs, device=device).unsqueeze(0).expand(B, -1)
+            attn_out_chunks.append(self._attend(
+                raw=raw_chunk,
+                compressed=compressed_all[:, :i, :],
+                raw_positions=raw_pos,
+                compressed_positions=comp_positions_all[:, :i],
+                cos_cache=cos_cache, sin_cache=sin_cache,
+            ))
+
+        # Trailing partial window sees ALL completed blocks (all are fully
+        # in the past relative to it).
+        if tail_len > 0:
+            raw_chunk = h_norm[:, n_blocks * bs:, :]
+            raw_pos = torch.arange(n_blocks * bs, T, device=device).unsqueeze(0).expand(B, -1)
+            attn_out_chunks.append(self._attend(
+                raw=raw_chunk,
+                compressed=compressed_all,
+                raw_positions=raw_pos,
+                compressed_positions=comp_positions_all,
+                cos_cache=cos_cache, sin_cache=sin_cache,
+            ))
+
+        return torch.cat(attn_out_chunks, dim=1)  # (B, T, D)
+
+
+    def init_cache(self, batch_size: int, device):
+        return {
+            "compressed": torch.zeros(batch_size, 0, self.d_model, device=device),
+            "compressed_positions": torch.zeros(batch_size, 0, dtype=torch.long, device=device),
+            "raw_buffer": torch.zeros(batch_size, 0, self.d_model, device=device),
+            "raw_positions": torch.zeros(batch_size, 0, dtype=torch.long, device=device),
+            "next_pos": 0,
+        }
+
+    def forward_step(self, h_norm_new: torch.Tensor, cache: dict):
+        """
+        h_norm_new: (B, 1, D) already-normalized hidden state for exactly
+        ONE new token.
+        cache: dict as returned by init_cache / a previous forward_step call.
+
+        Returns (attn_out, new_cache):
+          attn_out: (B, 1, D) — same contract as forward()'s per-token slice.
+          new_cache: updated cache dict (raw buffer grown by the new token;
+                     if that completes a block, the block is compressed ONCE,
+                     appended to the compressed cache, and the raw buffer is
+                     reset to empty).
+        """
+        B = h_norm_new.shape[0]
+        device = h_norm_new.device
+        bs = self.window_size
+
+        pos = cache["next_pos"]
+        pos_tensor = torch.full((B, 1), pos, dtype=torch.long, device=device)
+
+        new_raw_buffer = torch.cat([cache["raw_buffer"], h_norm_new], dim=1)
+        new_raw_positions = torch.cat([cache["raw_positions"], pos_tensor], dim=1)
+
+        T_needed = pos + 1
+        cos_cache, sin_cache = self._rope_cache(T_needed, device)
+
+        attn_out_all = self._attend(
+            raw=new_raw_buffer,
+            compressed=cache["compressed"],
+            raw_positions=new_raw_positions,
+            compressed_positions=cache["compressed_positions"],
+            cos_cache=cos_cache, sin_cache=sin_cache,
+        )
+        attn_out = attn_out_all[:, -1:, :]
+
+        if new_raw_buffer.shape[1] == bs:
+            block_compressed = self.ln_pool(self.pooler(new_raw_buffer))  # (B, D)
+            block_compressed = block_compressed.unsqueeze(1)              # (B,1,D)
+            block_end_pos = torch.full((B, 1), pos, dtype=torch.long, device=device)  # pos IS the block's last index
+
+            new_compressed = torch.cat([cache["compressed"], block_compressed], dim=1)
+            new_compressed_positions = torch.cat([cache["compressed_positions"], block_end_pos], dim=1)
+
+            new_raw_buffer = h_norm_new.new_zeros(B, 0, self.d_model)
+            new_raw_positions = torch.zeros(B, 0, dtype=torch.long, device=device)
+        else:
+            new_compressed = cache["compressed"]
+            new_compressed_positions = cache["compressed_positions"]
+
+        new_cache = {
+            "compressed": new_compressed,
+            "compressed_positions": new_compressed_positions,
+            "raw_buffer": new_raw_buffer,
+            "raw_positions": new_raw_positions,
+            "next_pos": pos + 1,
+        }
+        return attn_out, new_cache
+
+
+# ------------------------ CPWA Layer (core) — now a plain, clean block ------------------------
 @dataclass
 class CPWAConfig:
     vocab_size: int
@@ -296,82 +441,38 @@ class SwiGLU(nn.Module):
 
 class CPWA(nn.Module):
     """
-    A single CPWA layer: gated pooling for completed blocks + compressed-prefix sliding window attention.
+    A single CPWA transformer block: pre-norm -> CPWA attention -> residual
+    -> pre-norm -> FFN -> residual. Reads exactly like a normal transformer
+    block now; all window/block/compression mechanics live in CPWAAttention.
     """
     def __init__(self, cfg: CPWAConfig):
         super().__init__()
         self.cfg = cfg
         self.ln1 = nn.LayerNorm(cfg.n_embd)
-        self.attn = CPWAAttention(cfg.n_embd, cfg.n_head, dropout=cfg.dropout)
+        self.attn = CPWAAttention(
+            cfg.n_embd, cfg.n_head, cfg.window_size,
+            rope_base=cfg.rope_base, dropout=cfg.dropout,
+        )
         self.ln2 = nn.LayerNorm(cfg.n_embd)
         self.ffn = SwiGLU(cfg.n_embd, cfg.d_ff_mult)
-        self.ln_pool = nn.LayerNorm(cfg.n_embd)
-        self.pooler = GatedPooler(cfg.n_embd, cfg.window_size)
 
-    def forward_training(self, h: torch.Tensor):
-        B, T, D = h.shape
-        bs = self.cfg.window_size
-        device = h.device
-
-        n_blocks = T // bs
-        tail_len = T % bs
-
-        h_norm = self.ln1(h)
-        cos_cache, sin_cache = self._rope_cache(T, device)
-
-        # Pre‑compute all compressed tokens (for completed blocks)
-        if n_blocks > 0:
-            h_blocks = h_norm[:, : n_blocks * bs, :].view(B, n_blocks, bs, D)
-            compressed_all = self.ln_pool(self.pooler(h_blocks))
-            # Position: end of block
-            comp_positions_all = (torch.arange(n_blocks, device=device) + 1) * bs - 1
-            comp_positions_all = comp_positions_all.unsqueeze(0).expand(B, -1)
-        else:
-            compressed_all = h_norm.new_zeros(B, 0, D)
-            comp_positions_all = torch.zeros(B, 0, dtype=torch.long, device=device)
-
-        attn_out_chunks = []
-
-        # Process each window (block) of raw tokens
-        for i in range(n_blocks):
-            raw_chunk = h_norm[:, i * bs:(i + 1) * bs, :]
-            raw_pos = torch.arange(i * bs, (i + 1) * bs, device=device).unsqueeze(0).expand(B, -1)
-            comp_prefix = compressed_all[:, :i, :]          # only blocks before current
-            comp_prefix_pos = comp_positions_all[:, :i]
-
-            raw_out, _ = self.attn(
-                raw=raw_chunk,
-                compressed=comp_prefix,
-                raw_positions=raw_pos,
-                compressed_positions=comp_prefix_pos,
-                cos_cache=cos_cache, sin_cache=sin_cache,
-            )
-            attn_out_chunks.append(raw_out)
-
-        # Trailing remainder (if any) – sees all completed blocks
-        if tail_len > 0:
-            raw_chunk = h_norm[:, n_blocks * bs:, :]
-            raw_pos = torch.arange(n_blocks * bs, T, device=device).unsqueeze(0).expand(B, -1)
-            raw_out, _ = self.attn(
-                raw=raw_chunk,
-                compressed=compressed_all,
-                raw_positions=raw_pos,
-                compressed_positions=comp_positions_all,
-                cos_cache=cos_cache, sin_cache=sin_cache,
-            )
-            attn_out_chunks.append(raw_out)
-
-        attn_out = torch.cat(attn_out_chunks, dim=1)  # (B, T, D)
-        h = h + attn_out
+    def forward_training(self, h: torch.Tensor) -> torch.Tensor:
+        h = h + self.attn(self.ln1(h))
         h = h + self.ffn(self.ln2(h))
         return h
 
-    def _rope_cache(self, T, device):
-        max_pos = max(T, self.cfg.window_size) + 8
-        head_dim = self.cfg.n_embd // self.cfg.n_head
-        return build_rope_cache(max_pos, head_dim, base=self.cfg.rope_base, device=device)
+    def init_cache(self, batch_size: int, device):
+        return self.attn.init_cache(batch_size, device)
 
-# ------------------------ CPWA Model (full) ------------------------
+    def forward_step(self, h_new: torch.Tensor, cache: dict):
+        """h_new: (B, 1, D) hidden state for one new token, this layer's input."""
+        attn_out, new_cache = self.attn.forward_step(self.ln1(h_new), cache)
+        h_new = h_new + attn_out
+        h_new = h_new + self.ffn(self.ln2(h_new))
+        return h_new, new_cache
+
+
+# ------------------------ CPWA Model (full) — unchanged ------------------------
 class CPWAModel(nn.Module):
     def __init__(self, cfg: CPWAConfig):
         super().__init__()
@@ -407,18 +508,48 @@ class CPWAModel(nn.Module):
 
     @torch.no_grad()
     def generate(self, idx, max_new_tokens, temperature=1.0, top_k=50):
+        """
+        Stateful incremental generation using the per-layer KV/compressed
+        caches (see CPWAAttention.forward_step). This is NOT "call forward()
+        on a sliding truncated window" — that approach recomputes block
+        boundaries relative to wherever the truncation happens to start,
+        which shifts by one every step and corrupts the compressed prefix
+        relative to what the model saw during training (block boundaries are
+        always fixed multiples of window_size from the TRUE start of the
+        sequence). Instead we feed the prompt through the cache one token at
+        a time (still respecting true positions from 0), then continue
+        feeding sampled tokens the same way, so compression only ever
+        happens at true fixed-size boundaries, exactly matching training.
+        """
+        B, T0 = idx.shape
+        device = idx.device
+
+        caches = [layer.init_cache(B, device) for layer in self.layers]
+
+        def step(token_ids):
+            # token_ids: (B, 1)
+            h = self.tok_emb(token_ids)  # dropout is a no-op in eval/no_grad generation
+            for i, layer in enumerate(self.layers):
+                h, caches[i] = layer.forward_step(h, caches[i])
+            h = self.ln_f(h)
+            logits = self.lm_head(h)  # (B, 1, vocab)
+            return logits
+
+        last_logits = None
+        for t in range(T0):
+            last_logits = step(idx[:, t:t + 1])
+
         for _ in range(max_new_tokens):
-            idx_cond = idx if idx.size(1) <= self.cfg.seq_len else idx[:, -self.cfg.seq_len:]
-            logits, _ = self(idx_cond)
-            logits = logits[:, -1, :] / temperature
+            logits = last_logits[:, -1, :] / temperature
             if top_k is not None:
                 v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
                 logits[logits < v[:, [-1]]] = -float("inf")
             probs = F.softmax(logits, dim=-1)
             next_id = torch.multinomial(probs, num_samples=1)
             idx = torch.cat([idx, next_id], dim=1)
-        return idx
+            last_logits = step(next_id)
 
+        return idx
 # ========== BUILD MODEL ==========
 cfg = CPWAConfig(
     vocab_size=VOCAB_SIZE,
@@ -603,7 +734,7 @@ def sample(prompt="The history of ", max_new_tokens=100):
 
 # ========== ENTRY POINT ==========
 if __name__ == "__main__":
-    train(resume_from="/content/model_cpwa.pt")  # to resume
+    train(resume_from="/content/drive/MyDrive/model_cpwa (6).pt")  # to resume(this is my checkpoint, I was training it in google colab on T4 gpu)
     #train()
     print("\n--- sample generation ---")
     print(sample())
