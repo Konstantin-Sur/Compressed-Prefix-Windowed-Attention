@@ -57,14 +57,31 @@ The attention mask is:
 
 ---
 
-## Training‑Time Optimisation (Chunking)
+## Results:
 
-Instead of building a full O(T²) mask, we process **one raw block at a time** in a loop. For block `i`:
+| training mode | loss |
+|-------------|---------|
+| pre-training | 3.5 |
+| fine tune | 3.0 |
 
-- **Raw chunk**: tokens `i*B … (i+1)*B - 1`
-- **Compressed prefix**: only `compressed[0:i]` (blocks strictly before this window)
+**Generation example**
 
-Each attention call is small, and the total work is **O(T·B)**. This exactly matches the inference behaviour (no train‑test mismatch) and enables **high throughput** (~21k tokens/sec on a T4 for a 40M‑parameter model).
+Prompt:
+```
+####Human####:
+What's the most popular programming language?
+```
+
+Result:
+```
+####Human####:
+What's the most popular programming language?
+
+####Assistant####: 
+In terms of coding, there are several popular programming languages that can be used to create a user experience. Some popular programming languages include Python, JavaScript, Java, and JavaScript.
+```
+
+**LONGER GENERATIONS SEE IN Gen_examples.txt**
 
 ---
 
