@@ -1,3 +1,4 @@
+
 # Compressed‑Prefix Window Attention (CPWA)
 
 **CPWA** is a novel attention layer that enables efficient processing of long sequences by compressing completed blocks of tokens into compact summaries, while preserving causal attention over the current sliding window.
@@ -15,8 +16,8 @@ The layer performs attention where:
 - **Raw tokens** attend to **all compressed vectors** from the past **and** causally to each other in the current window.
 - **Compressed tokens** attend **causally only among themselves** – they never see raw tokens.
 
-This yields **O(T·B)** training complexity (instead of O(T²)) and **O(T/B)** memory for the compressed history, while retaining full access to the entire past.
-
+This yields **O(T·B + T²/B)** training complexity (instead of O(T²)) and **O(T/B)** memory for the compressed history, while retaining full access to the entire past.
+<img src="HowItWorks.svg" width="800" alt="My Diagram">
 ---
 
 ## Results and most valuable confirmation:
