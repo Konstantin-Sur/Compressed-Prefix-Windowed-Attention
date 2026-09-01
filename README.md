@@ -19,45 +19,7 @@ This yields **O(T·B)** training complexity (instead of O(T²)) and **O(T/B)** m
 
 ---
 
-## Key Components
-
-### 1. Gated Pooler (block compressor)
-For each block of `B` token embeddings `X ∈ ℝ^(B×D)`, it computes:
-
-- **Gate logits**: `G = gate(X + pos_emb)`  
-  (positional embedding inside the block)
-- **Softmax weights** (per‑channel):  
-  `W = softmax(G, dim=0)`   – each feature dimension learns its own attention over positions.
-- **Values**: `V = value_proj(X)`
-- **Compressed vector**: `c = Σ (W ⊙ V)`, then `LayerNorm`
-
-This is *not* simple averaging or max pooling – it learns which positions in the block are most informative per channel.
-
-### 2. Hierarchical Attention Pattern
-The combined sequence is arranged as:
-
-```
-[compressed_0, compressed_1, …, compressed_k, raw_0, raw_1, …, raw_{m-1}]
-```
-
-where `k` = number of completed blocks, `m` = number of tokens in current window.
-
-The attention mask is:
-
-| Query \ Key | compressed 0…k | raw 0…m-1 |
-|-------------|----------------|-----------|
-| compressed_i | causal among compressed (i→j≤i) | ❌ no access |
-| raw_j       | ✅ full access to all compressed | causal among raw (j→l≤j) |
-
-**Intuition**: Compressed vectors represent the *past* and are fixed; raw tokens see the entire past at low cost, while compressed tokens stay independent of future raw content (cache‑stable for generation).
-
-### 3. Rotary Position Embeddings (RoPE)
-- **Raw tokens** get RoPE at their true global position.
-- **Compressed token `i`** gets RoPE at the **end position** of its block (`(i+1)*B - 1`), preserving relative‑distance semantics.
-
----
-
-## Results:
+## Results and most valuable confirmation:
 
 | training mode | loss |
 |-------------|---------|
@@ -80,8 +42,47 @@ What's the most popular programming language?
 ####Assistant####: 
 In terms of coding, there are several popular programming languages that can be used to create a user experience. Some popular programming languages include Python, JavaScript, Java, and JavaScript.
 ```
-
 **LONGER GENERATIONS SEE IN Gen_examples.txt**
+
+Model was finetuned on small amount of examples(20M tokens) and non-optimized finetune strategy, but still managed to get those good results. (I'll run training for longer time, this is pre-release, but it will take a while because I have access only to free T4 in google colab.
+
+
+
+
+
+### Most valuable confirmation
+ - Looking at the generation in Gen_examples.txt, you can see that model didn't jump from topic to topic even in conversations longer then its window size, that means that compressed prefix does it's job and this is confirms that algorithm works!
+---
+
+
+
+## Key Components
+
+### 1. Gated Pooler (block compressor)
+For each block of `B` token embeddings `X ∈ ℝ^(B×D)`, it computes:
+
+- **Gate logits**: `G = gate(X + pos_emb)`  
+  (positional embedding inside the block)
+- **Softmax weights** (per‑channel):  
+  `W = softmax(G, dim=0)`   – each feature dimension learns its own attention over positions.
+- **Values**: `V = value_proj(X)`
+- **Compressed vector**: `c = Σ (W ⊙ V)`, then `LayerNorm`
+
+This is *not* simple averaging or max pooling – it learns which positions in the block are most informative per channel.
+
+### 2. Compressed Prefix Windowed Attention (CPWA)
+The combined sequence is arranged as:
+
+```
+[compressed_0, compressed_1, …, compressed_k, raw_0, raw_1, …, raw_{m-1}]
+```
+
+where `k` = number of completed blocks, `m` = number of tokens in current window.
+**Intuition**: Compressed vectors represent the *past* and are fixed; raw tokens see the entire past at low cost, while compressed tokens stay independent of future raw content (cache‑stable for generation).
+
+### 3. Rotary Position Embeddings (RoPE)
+- **Raw tokens** get RoPE at their true global position.
+- **Compressed token `i`** gets RoPE at the **end position** of its block (`(i+1)*B - 1`), preserving relative‑distance semantics.
 
 ---
 
@@ -89,12 +90,10 @@ In terms of coding, there are several popular programming languages that can be 
 
 | Feature | Benefit |
 |---------|---------|
-| **Linear‑ish complexity** | O(T·B) instead of O(T²) – scales to long contexts. |
+| **Subquadratic complexity** | O(T·B + T²/B) – scales to long contexts. |
 | **Full past access** | Raw tokens see the entire history via compressed summaries. |
-| **Low memory** | Stores only `T/B` compressed vectors + one window. |
+| **Low memory** | Stores only `T·B + T²/B` compressed vectors + one window. |
 | **No position‑emb table** | RoPE handles positions without extra parameters. |
-| **Fast training** | Chunked attention fits in small VRAM and achieves high token/s. |
-| **Simple inference** | Cache compressed tokens as they are finalised; no recomputation. |
 
 ---
 
