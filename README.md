@@ -91,7 +91,7 @@ where `k` = number of completed blocks, `m` = number of tokens in current window
 
 | Feature | Benefit |
 |---------|---------|
-| **Subquadratic complexity** | O(T·B + T²/B) – scales to long contexts. |
+| **Quadratic complexity, but with high constant, and precise past recall** | O(T·B + T²/B) – scales to long contexts. |
 | **Full past access** | Raw tokens see the entire history via compressed summaries. |
 | **Low memory** | Stores only `T·B + T²/B` compressed vectors + one window. |
 | **No position‑emb table** | RoPE handles positions without extra parameters. |
