@@ -1,8 +1,11 @@
-
 # Compressed‑Prefix Window Attention (CPWA)
 
-**CPWA** is a novel attention layer that enables efficient processing of long sequences by compressing completed blocks of tokens into compact summaries, while preserving causal attention over the current sliding window.
+**CPWA** is a novel attention mechanism that compresses completed blocks of tokens into compact summaries while keeping full causal attention inside the current window.  
 
+It delivers:
+- **Strong length generalisation** (98% NIAH accuracy at 2× training length vs 56% for full attention)
+- **Coherent language modelling** even with limited training
+- **Significantly better efficiency** than dense attention: O(T·B + T²/B)
 ---
 
 ## Overview
@@ -19,11 +22,11 @@ The layer performs attention where:
 This yields **O(T·B + T²/B)** training complexity (instead of O(T²)) and **O(T/B)** memory for the compressed history, while retaining full access to the entire past.
 
 <img src="HowItWorks.svg" width="800" alt="My Diagram">
----
 
-## Results and valuable confirmation:
 
-### 1. Synthetic Needle-in-a-Haystack (length generalisation)
+## Results: CPWA Shows Strong Length Generalisation and Coherent Language Modelling
+
+### 1. Synthetic Needle-in-a-Haystack (length generalisation and past-retrive task)
 
 Both Full Attention and CPWA were trained from scratch for 1500 steps on sequences of length 2048, and window size of 128.  
 They were then evaluated zero-shot on longer contexts (pure length extrapolation).
@@ -43,12 +46,14 @@ At 2× the training length, CPWA retains almost perfect retrieval accuracy while
 This is direct evidence that the compressed prefix successfully carries the critical information across long distances.
 My tests showed that NIAH test is working, so I'll be relying on it.
 
-### 2. Language modelling (preliminary)
+### 2. Language modelling
 
 | Training mode | Loss |
 |---------------|------|
-| Pre-training  | 3.5  |
+| Pre-training(fineweb)  | 3.5  |
 | Fine-tune     | 3.0  |
+
+**Finetuned checkpoint can be found in releases, tag "v1"**
 
 **Generation example**
 
@@ -72,9 +77,11 @@ Model was finetuned on small amount of examples(20M tokens) and non-optimized fi
 
 More examples (including longer conversations) can be found in `Gen_examples.txt`.
 
+
+
 ### 3. Qualitative Confirmation of Long-Context Behaviour
 
-Even in conversations longer than the window size, the model does **not** jump between topics or lose earlier context.  
+Even in conversations longer than the window size `Gen_examples.txt`, the model does **not** jump between topics or lose earlier context.  
 This is further practical evidence that the compressed prefix is functioning as intended and successfully preserving information beyond the raw window.
 
 ---
