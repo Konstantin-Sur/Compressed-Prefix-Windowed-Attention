@@ -1,0 +1,48 @@
+device = cuda
+
+=== Training FULL attention model @ seq_len=2048 ===
+  [full] step    1/1500 loss 4.1423 (0.3s)
+  [full] step  100/1500 loss 1.8551 (26.4s)
+  [full] step  200/1500 loss 0.0279 (53.2s)
+  [full] step  300/1500 loss 0.0172 (79.0s)
+  [full] step  400/1500 loss 0.0134 (105.3s)
+  [full] step  500/1500 loss 0.0099 (131.6s)
+  [full] step  600/1500 loss 0.0074 (158.0s)
+  [full] step  700/1500 loss 0.0060 (184.3s)
+  [full] step  800/1500 loss 0.0050 (210.7s)
+  [full] step  900/1500 loss 0.0041 (237.0s)
+  [full] step 1000/1500 loss 0.0034 (263.2s)
+  [full] step 1100/1500 loss 0.0030 (289.6s)
+  [full] step 1200/1500 loss 0.0026 (316.0s)
+  [full] step 1300/1500 loss 0.0022 (342.3s)
+  [full] step 1400/1500 loss 0.0019 (368.7s)
+  [full] step 1500/1500 loss 0.0017 (395.0s)
+
+=== Training CPWA model @ seq_len=2048 ===
+  [cpwa] step    1/1500 loss 4.3061 (0.2s)
+  [cpwa] step  100/1500 loss 2.2600 (20.8s)
+  [cpwa] step  200/1500 loss 2.3785 (41.2s)
+  [cpwa] step  300/1500 loss 0.0766 (62.0s)
+  [cpwa] step  400/1500 loss 0.0194 (82.7s)
+  [cpwa] step  500/1500 loss 0.0160 (103.4s)
+  [cpwa] step  600/1500 loss 0.0122 (124.4s)
+  [cpwa] step  700/1500 loss 0.0089 (145.0s)
+  [cpwa] step  800/1500 loss 0.0075 (166.0s)
+  [cpwa] step  900/1500 loss 0.0058 (186.6s)
+  [cpwa] step 1000/1500 loss 0.0051 (207.9s)
+  [cpwa] step 1100/1500 loss 0.0045 (228.2s)
+  [cpwa] step 1200/1500 loss 0.0037 (249.4s)
+  [cpwa] step 1300/1500 loss 0.0032 (270.0s)
+  [cpwa] step 1400/1500 loss 0.0029 (291.1s)
+  [cpwa] step 1500/1500 loss 0.0024 (311.6s)
+
+=== Comparison: CPWA vs Full attention (all lengths) ===
+ seq_len |  Full acc% |  CPWA acc%
+     512 |     100.0% |     100.0%
+    1024 |     100.0% |     100.0%
+    2048 |     100.0% |     100.0%
+    4096 |      56.0% |      98.0%
+    8192 |      15.0% |      10.0%
+   16384 |      10.0% |      14.0%
+
+Saved figure to: niah_results.png
