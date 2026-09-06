@@ -27,7 +27,9 @@ This yields **O(T·B + T²/B)** training complexity (instead of O(T²)) and **O(
 | pre-training | 3.5 |
 | fine tune | 3.0 |
 
-**Generation example (that I'm proud of)**
+**Generation example**
+
+*That's really impressed me, because answer is coherent, and factually true, for 400M training tokens this is a lot*
 
 Prompt:
 ```
