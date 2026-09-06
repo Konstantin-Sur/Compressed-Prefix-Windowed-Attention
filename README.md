@@ -121,6 +121,11 @@ where `k` = number of completed blocks, `m` = number of tokens in current window
 - **Compressed token `i`** gets RoPE at the **end position** of its block (`(i+1)*B - 1`), preserving relative‑distance semantics.
 
 ---
+## Usage & Citation
+
+You are free to use, test, and build upon CPWA!
+
+If you use this work in a publication, please cite this repository / paper.
 
 ## Benefits
 
