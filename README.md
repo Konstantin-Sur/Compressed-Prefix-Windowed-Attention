@@ -14,18 +14,41 @@ Given a sequence of tokens, CPWA divides it into non‑overlapping blocks of fix
 
 The layer performs attention where:
 - **Raw tokens** attend to **all compressed vectors** from the past **and** causally to each other in the current window.
-- **Compressed tokens** attend **causally only among themselves** – they never see raw tokens.
+- **Compressed tokens** used as k/v
 
 This yields **O(T·B + T²/B)** training complexity (instead of O(T²)) and **O(T/B)** memory for the compressed history, while retaining full access to the entire past.
+
 <img src="HowItWorks.svg" width="800" alt="My Diagram">
 ---
 
-## Results and most valuable confirmation:
+## Results and valuable confirmation:
 
-| training mode | loss |
-|-------------|---------|
-| pre-training | 3.5 |
-| fine tune | 3.0 |
+### 1. Synthetic Needle-in-a-Haystack (length generalisation)
+
+Both Full Attention and CPWA were trained from scratch for 1500 steps on sequences of length 2048, and window size of 128.  
+They were then evaluated zero-shot on longer contexts (pure length extrapolation).
+<img src="niah_results.png" width="800" alt="My Diagram">
+
+| Context length | Full Attention | CPWA     |
+|----------------|----------------|----------|
+| 512            | 100.0%         | 100.0%   |
+| 1024           | 100.0%         | 100.0%   |
+| 2048 (train)   | 100.0%         | 100.0%   |
+| **4096 (2×)**  | 56.0%          | **98.0%**|
+| 8192           | 15.0%          | 10.0%    |
+| 16384          | 10.0%          | 14.0%    |
+
+**Key takeaway:**  
+At 2× the training length, CPWA retains almost perfect retrieval accuracy while dense attention collapses.  
+This is direct evidence that the compressed prefix successfully carries the critical information across long distances.
+My tests showed that NIAH test is working, so I'll be relying on it.
+
+### 2. Language modelling (preliminary)
+
+| Training mode | Loss |
+|---------------|------|
+| Pre-training  | 3.5  |
+| Fine-tune     | 3.0  |
 
 **Generation example**
 
@@ -45,16 +68,15 @@ What's the most popular programming language?
 ####Assistant####: 
 In terms of coding, there are several popular programming languages that can be used to create a user experience. Some popular programming languages include Python, JavaScript, Java, and JavaScript.
 ```
-**LONGER GENERATIONS SEE IN Gen_examples.txt**
-
 Model was finetuned on small amount of examples(20M tokens) and non-optimized finetune strategy, but still managed to get those good results. (I'll run training for longer time, this is pre-release, but it will take a while because I have access only to free T4 in google colab.
 
+More examples (including longer conversations) can be found in `Gen_examples.txt`.
 
+### 3. Qualitative Confirmation of Long-Context Behaviour
 
+Even in conversations longer than the window size, the model does **not** jump between topics or lose earlier context.  
+This is further practical evidence that the compressed prefix is functioning as intended and successfully preserving information beyond the raw window.
 
-
-### Most valuable confirmation
- - Looking at the generation in Gen_examples.txt, you can see that model didn't jump from topic to topic even in conversations longer then its window size, that means that compressed prefix does it's job and this is confirms that algorithm works!
 ---
 
 
