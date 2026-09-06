@@ -53,7 +53,6 @@ My tests showed that NIAH test is working, so I'll be relying on it.
 | Pre-training(fineweb)  | 3.5  |
 | Fine-tune     | 3.0  |
 
-**Finetuned checkpoint can be found in releases, tag "v1"**
 
 **Generation example**
 
@@ -63,6 +62,8 @@ Prompt:
 ```
 ####Human####:
 What's the most popular programming language?
+
+####Assistant####: 
 ```
 
 Result:
@@ -83,6 +84,9 @@ More examples (including longer conversations) can be found in `Gen_examples.txt
 
 Even in conversations longer than the window size `Gen_examples.txt`, the model does **not** jump between topics or lose earlier context.  
 This is further practical evidence that the compressed prefix is functioning as intended and successfully preserving information beyond the raw window.
+
+### 4. Model Checkpoint
+The finetuned model checkpoint can be downloaded from the [Releases](../../releases) page.
 
 ---
 
