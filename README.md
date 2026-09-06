@@ -27,7 +27,7 @@ This yields **O(T·B + T²/B)** training complexity (instead of O(T²)) and **O(
 | pre-training | 3.5 |
 | fine tune | 3.0 |
 
-**Generation example**
+**Generation example (that I'm proud of)**
 
 Prompt:
 ```
